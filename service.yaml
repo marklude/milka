@@ -1,0 +1,54 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: milka
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/execution-environment: "gen2"
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/cloudsql-instances: "milka-450720:asia-southeast1:milka"
+        run.googleapis.com/vpc-access-connector: "projects/milka-450720/locations/asia-southeast1/connectors/milka"
+        run.googleapis.com/cloudsql-unix-sockets: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      serviceAccountName: 222961491633-compute@developer.gserviceaccount.com
+      containers:
+        - image: gcr.io/milka-450720/milka:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: TZ
+              value: "Asia/Singapore"
+            - name: GOOGLE_CLOUD_PROJECT
+              value: "milka-450720"
+            - name: BUCKET_NAME
+              value: "milka_user_data"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          startupProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 8080
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/ping
+              port: 8080
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
