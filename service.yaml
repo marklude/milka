@@ -29,8 +29,8 @@ spec:
               value: "milka_user_data"
           resources:
             limits:
-              cpu: "2"
-              memory: 4Gi
+              cpu: "4"
+              memory: 16Gi
           startupProbe:
             httpGet:
               path: /api/v1/ping
