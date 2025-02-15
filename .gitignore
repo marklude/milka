@@ -119,4 +119,3 @@ target/
 docker-compose-*.yml
 service.yaml
 build_helpers/
-!build_helpers/ta-lib/
