@@ -27,6 +27,16 @@ spec:
               value: "milka-450720"
             - name: BUCKET_NAME
               value: "milka_user_data"
+            - name: CONFIG_REFRESH
+              value: "$(date +%s)"  # This will force config reload
+            - name: FREQTRADE_CONFIG_PATH
+              value: "/freqtrade/user_data/config.json"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ls -la /freqtrade/user_data/ &&
+              cat /freqtrade/user_data/config.json &&
+              python docker_entrypoint.py
           resources:
             limits:
               cpu: "4"
