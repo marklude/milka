@@ -1,27 +1,46 @@
-# Freqtrade rules
+# FreqTrade Configuration and Data
 config*.json
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-logfile.txt
+*.sqlite*
 user_data/*
-!user_data/strategy/sample_strategy.py
-!user_data/notebooks
-!user_data/models
-!user_data/freqaimodels
-user_data/freqaimodels/*
-user_data/models/*
-user_data/notebooks/*
-freqtrade-plot.html
-freqtrade-profit-plot.html
-freqtrade/rpc/api_server/ui/*
-build_helpers/ta-lib/*
+!user_data/strategies/
+!user_data/hyperopts/
+!user_data/notebooks/
+!user_data/models/
+!user_data/freqaimodels/
 
-# Macos related
+# Keep templates and examples
+!config_examples/*.example.json
+!user_data/strategies/*.example.py
+!user_data/hyperopts/*.example.py
+
+# Cloud Run and Deployment
+service.yaml
+!service.yaml.template
+build_helpers/*
+!build_helpers/ta-lib/
+docker-compose-*.yml
+
+# Logs and Plots
+*.log
+logfile.txt
+freqtrade-*.html
+user_data/logs/*
+
+# Development and Environment
+.env*
+.venv
+venv/
+.idea/
+.vscode/
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+*.py[cod]
+
+# OS Specific
 .DS_Store
 
 # Byte-compiled / optimized / DLL files
-__pycache__/
 *.py[cod]
 *$py.class
 
@@ -73,7 +92,6 @@ coverage.xml
 *.pot
 
 # Django stuff:
-*.log
 local_settings.py
 
 # Flask stuff:
@@ -100,22 +118,9 @@ target/
 # pyenv
 .python-version
 
-.env
-.venv
-.idea
-.vscode
-
-.pytest_cache/
-.mypy_cache/
-
 #exceptions
 !*.gitkeep
 !config_examples/config_binance.example.json
 !config_examples/config_full.example.json
 !config_examples/config_kraken.example.json
 !config_examples/config_freqai.example.json
-
-# Deployment configurations
-docker-compose-*.yml
-service.yaml
-build_helpers/
