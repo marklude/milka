@@ -37,6 +37,7 @@ HYPEROPT_LOSS_BUILTIN = [
     "CalmarHyperOptLoss",
     "MaxDrawDownHyperOptLoss",
     "MaxDrawDownRelativeHyperOptLoss",
+    "MaxDrawDownPerPairHyperOptLoss",
     "ProfitDrawDownHyperOptLoss",
     "MultiMetricHyperOptLoss",
 ]
@@ -59,7 +60,7 @@ AVAILABLE_PAIRLISTS = [
     "VolatilityFilter",
 ]
 AVAILABLE_DATAHANDLERS = ["json", "jsongz", "feather", "parquet"]
-BACKTEST_BREAKDOWNS = ["day", "week", "month"]
+BACKTEST_BREAKDOWNS = ["day", "week", "month", "year"]
 BACKTEST_CACHE_AGE = ["none", "day", "week", "month"]
 BACKTEST_CACHE_DEFAULT = "day"
 DRY_RUN_WALLET = 1000
@@ -99,7 +100,7 @@ DL_DATA_TIMEFRAMES = ["1m", "5m"]
 ENV_VAR_PREFIX = "FREQTRADE__"
 
 CANCELED_EXCHANGE_STATES = ("cancelled", "canceled", "expired", "rejected")
-NON_OPEN_EXCHANGE_STATES = CANCELED_EXCHANGE_STATES + ("closed",)
+NON_OPEN_EXCHANGE_STATES = (*CANCELED_EXCHANGE_STATES, "closed")
 
 # Define decimals per coin for outputs
 # Only used for outputs.

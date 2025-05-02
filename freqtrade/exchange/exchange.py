@@ -12,7 +12,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from math import floor, isnan
 from threading import Lock
-from typing import Any, Literal, TypeGuard
+from typing import Any, Literal, TypeGuard, TypeVar
 
 import ccxt
 import ccxt.pro as ccxt_pro
@@ -113,6 +113,8 @@ from freqtrade.util.periodic_cache import PeriodicCache
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 
 class Exchange:
     # Parameters to add directly to buy/sell calls (like agreeing to trading agreement)
@@ -131,7 +133,6 @@ class Exchange:
         "stoploss_order_types": {},
         "order_time_in_force": ["GTC"],
         "ohlcv_params": {},
-        "ohlcv_candle_limit": 500,
         "ohlcv_has_history": True,  # Some exchanges (Kraken) don't provide history via ohlcv
         "ohlcv_partial_candle": True,
         "ohlcv_require_since": False,
@@ -147,6 +148,7 @@ class Exchange:
         "trades_has_history": False,
         "l2_limit_range": None,
         "l2_limit_range_required": True,  # Allow Empty L2 limit (kucoin)
+        "l2_limit_upper": None,  # Upper limit for L2 limit
         "mark_ohlcv_price": "mark",
         "mark_ohlcv_timeframe": "8h",
         "funding_fee_timeframe": "8h",
@@ -276,6 +278,11 @@ class Exchange:
 
         logger.info(f'Using Exchange "{self.name}"')
         self.required_candle_call_count = 1
+        # Converts the interval provided in minutes in config to seconds
+        self.markets_refresh_interval: int = (
+            exchange_conf.get("markets_refresh_interval", 60) * 60 * 1000
+        )
+
         if validate:
             # Initial markets load
             self.reload_markets(True, load_leverage_tiers=False)
@@ -284,11 +291,6 @@ class Exchange:
             self.required_candle_call_count = self.validate_required_startup_candles(
                 self._startup_candle_count, config.get("timeframe", "")
             )
-
-        # Converts the interval provided in minutes in config to seconds
-        self.markets_refresh_interval: int = (
-            exchange_conf.get("markets_refresh_interval", 60) * 60 * 1000
-        )
 
         if self.trading_mode != TradingMode.SPOT and load_leverage_tiers:
             self.fill_leverage_tiers()
@@ -466,7 +468,12 @@ class Exchange:
         :return: Candle limit as integer
         """
 
-        fallback_val = self._ft_has.get("ohlcv_candle_limit")
+        ccxt_val = self.features(
+            "spot" if candle_type == CandleType.SPOT else "futures", "fetchOHLCV", "limit", 500
+        )
+        if not isinstance(ccxt_val, float | int):
+            ccxt_val = 500
+        fallback_val = self._ft_has.get("ohlcv_candle_limit", ccxt_val)
         if candle_type == CandleType.FUNDING_RATE:
             fallback_val = self._ft_has.get("funding_fee_candle_limit", fallback_val)
         return int(
@@ -642,7 +649,8 @@ class Exchange:
 
     def _load_async_markets(self, reload: bool = False) -> dict[str, Any]:
         try:
-            markets = self.loop.run_until_complete(self._api_reload_markets(reload=reload))
+            with self._loop_lock:
+                markets = self.loop.run_until_complete(self._api_reload_markets(reload=reload))
 
             if isinstance(markets, Exception):
                 raise markets
@@ -887,6 +895,24 @@ class Exchange:
             return self._ft_has["exchange_has_overrides"][endpoint]
         return endpoint in self._api_async.has and self._api_async.has[endpoint]
 
+    def features(
+        self, market_type: Literal["spot", "futures"], endpoint, attribute, default: T
+    ) -> T:
+        """
+        Returns the exchange features for the given markettype
+        https://docs.ccxt.com/#/README?id=features
+        attributes are in a nested dict, with spot and swap.linear
+        e.g. spot.fetchOHLCV.limit
+             swap.linear.fetchOHLCV.limit
+        """
+        feat = (
+            self._api_async.features.get("spot", {})
+            if market_type == "spot"
+            else self._api_async.features.get("swap", {}).get("linear", {})
+        )
+
+        return feat.get(endpoint, {}).get(attribute, default)
+
     def get_precision_amount(self, pair: str) -> float | None:
         """
         Returns the amount precision of the exchange.
@@ -935,7 +961,7 @@ class Exchange:
             return 1 / pow(10, precision)
 
     def get_min_pair_stake_amount(
-        self, pair: str, price: float, stoploss: float, leverage: float | None = 1.0
+        self, pair: str, price: float, stoploss: float, leverage: float = 1.0
     ) -> float | None:
         return self._get_stake_amount_limit(pair, price, stoploss, "min", leverage)
 
@@ -954,7 +980,7 @@ class Exchange:
         price: float,
         stoploss: float,
         limit: Literal["min", "max"],
-        leverage: float | None = 1.0,
+        leverage: float = 1.0,
     ) -> float | None:
         isMin = limit == "min"
 
@@ -963,6 +989,8 @@ class Exchange:
         except KeyError:
             raise ValueError(f"Can't get market information for symbol {pair}")
 
+        stake_limits = []
+        limits = market["limits"]
         if isMin:
             # reserve some percent defined in config (5% default) + stoploss
             margin_reserve: float = 1.0 + self._config.get(
@@ -972,11 +1000,12 @@ class Exchange:
             # it should not be more than 50%
             stoploss_reserve = max(min(stoploss_reserve, 1.5), 1)
         else:
+            # is_max
             margin_reserve = 1.0
             stoploss_reserve = 1.0
+            if max_from_tiers := self._get_max_notional_from_tiers(pair, leverage=leverage):
+                stake_limits.append(max_from_tiers)
 
-        stake_limits = []
-        limits = market["limits"]
         if limits["cost"][limit] is not None:
             stake_limits.append(
                 self._contracts_to_amount(pair, limits["cost"][limit]) * stoploss_reserve
@@ -1340,8 +1369,8 @@ class Exchange:
             ordertype = available_order_Types[user_order_type]
         else:
             # Otherwise pick only one available
-            ordertype = list(available_order_Types.values())[0]
-            user_order_type = list(available_order_Types.keys())[0]
+            ordertype = next(iter(available_order_Types.values()))
+            user_order_type = next(iter(available_order_Types.keys()))
         return ordertype, user_order_type
 
     def _get_stop_limit_rate(self, stop_price: float, order_types: dict, side: str) -> float:
@@ -1930,14 +1959,18 @@ class Exchange:
 
     @staticmethod
     def get_next_limit_in_list(
-        limit: int, limit_range: list[int] | None, range_required: bool = True
+        limit: int,
+        limit_range: list[int] | None,
+        range_required: bool = True,
+        upper_limit: int | None = None,
     ):
         """
         Get next greater value in the list.
         Used by fetch_l2_order_book if the api only supports a limited range
+        if both limit_range and upper_limit is provided, limit_range wins.
         """
         if not limit_range:
-            return limit
+            return min(limit, upper_limit) if upper_limit else limit
 
         result = min([x for x in limit_range if limit <= x] + [max(limit_range)])
         if not range_required and limit > result:
@@ -1954,7 +1987,10 @@ class Exchange:
         {'asks': [price, volume], 'bids': [price, volume]}
         """
         limit1 = self.get_next_limit_in_list(
-            limit, self._ft_has["l2_limit_range"], self._ft_has["l2_limit_range_required"]
+            limit,
+            self._ft_has["l2_limit_range"],
+            self._ft_has["l2_limit_range_required"],
+            self._ft_has["l2_limit_upper"],
         )
         try:
             return self._api.fetch_l2_order_book(pair, limit1)
@@ -2318,15 +2354,17 @@ class Exchange:
         :param until_ms: Timestamp in milliseconds to get history up to
         :return: Dataframe with candle (OHLCV) data
         """
-        pair, _, _, data, _ = self.loop.run_until_complete(
-            self._async_get_historic_ohlcv(
-                pair=pair,
-                timeframe=timeframe,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                candle_type=candle_type,
+        with self._loop_lock:
+            pair, _, _, data, _ = self.loop.run_until_complete(
+                self._async_get_historic_ohlcv(
+                    pair=pair,
+                    timeframe=timeframe,
+                    since_ms=since_ms,
+                    until_ms=until_ms,
+                    candle_type=candle_type,
+                    raise_=True,
+                )
             )
-        )
         logger.debug(f"Downloaded data for {pair} from ccxt with length {len(data)}.")
         return ohlcv_to_dataframe(data, timeframe, pair, fill_missing=False, drop_incomplete=True)
 
@@ -2365,7 +2403,7 @@ class Exchange:
                 if isinstance(res, BaseException):
                     logger.warning(f"Async code raised an exception: {repr(res)}")
                     if raise_:
-                        raise
+                        raise res
                     continue
                 else:
                     # Deconstruct tuple if it's not an exception
@@ -2414,8 +2452,8 @@ class Exchange:
 
                     return self._exchange_ws.get_ohlcv(pair, timeframe, candle_type, candle_ts)
                 logger.info(
-                    f"Failed to reuse watch {pair}, {timeframe}, {candle_ts < last_refresh_time},"
-                    f" {candle_ts}, {last_refresh_time}, "
+                    f"Couldn't reuse watch for {pair}, {timeframe}, falling back to REST api. "
+                    f"{candle_ts < last_refresh_time}, {candle_ts}, {last_refresh_time}, "
                     f"{format_ms_time(candle_ts)}, {format_ms_time(last_refresh_time)} "
                 )
 
@@ -2763,7 +2801,7 @@ class Exchange:
         pair, timeframe, candle_type = pairwt
         since_ms = None
         new_ticks: list = []
-        all_stored_ticks_df = DataFrame(columns=DEFAULT_TRADES_COLUMNS + ["date"])
+        all_stored_ticks_df = DataFrame(columns=[*DEFAULT_TRADES_COLUMNS, "date"])
         first_candle_ms = self.needed_candle_for_trades_ms(timeframe, candle_type)
         # refresh, if
         # a. not in _trades
@@ -2808,7 +2846,7 @@ class Exchange:
                         else:
                             # Skip cache, it's too old
                             all_stored_ticks_df = DataFrame(
-                                columns=DEFAULT_TRADES_COLUMNS + ["date"]
+                                columns=[*DEFAULT_TRADES_COLUMNS, "date"]
                             )
 
                 # from_id overrules with exchange set to id paginate
@@ -3326,42 +3364,22 @@ class Exchange:
             pair_tiers = self._leverage_tiers[pair]
 
             if stake_amount == 0:
-                return self._leverage_tiers[pair][0]["maxLeverage"]  # Max lev for lowest amount
+                return pair_tiers[0]["maxLeverage"]  # Max lev for lowest amount
 
-            for tier_index in range(len(pair_tiers)):
-                tier = pair_tiers[tier_index]
-                lev = tier["maxLeverage"]
+            # Find the appropriate tier based on stake_amount
+            prior_max_lev = None
+            for tier in pair_tiers:
+                min_stake = tier["minNotional"] / (prior_max_lev or tier["maxLeverage"])
+                max_stake = tier["maxNotional"] / tier["maxLeverage"]
+                prior_max_lev = tier["maxLeverage"]
+                # Adjust notional by leverage to do a proper comparison
+                if min_stake <= stake_amount <= max_stake:
+                    return tier["maxLeverage"]
 
-                if tier_index < len(pair_tiers) - 1:
-                    next_tier = pair_tiers[tier_index + 1]
-                    next_floor = next_tier["minNotional"] / next_tier["maxLeverage"]
-                    if next_floor > stake_amount:  # Next tier min too high for stake amount
-                        return min((tier["maxNotional"] / stake_amount), lev)
-                        #
-                        # With the two leverage tiers below,
-                        # - a stake amount of 150 would mean a max leverage of (10000 / 150) = 66.66
-                        # - stakes below 133.33 = max_lev of 75
-                        # - stakes between 133.33-200 = max_lev of 10000/stake = 50.01-74.99
-                        # - stakes from 200 + 1000 = max_lev of 50
-                        #
-                        # {
-                        #     "min": 0,      # stake = 0.0
-                        #     "max": 10000,  # max_stake@75 = 10000/75 = 133.33333333333334
-                        #     "lev": 75,
-                        # },
-                        # {
-                        #     "min": 10000,  # stake = 200.0
-                        #     "max": 50000,  # max_stake@50 = 50000/50 = 1000.0
-                        #     "lev": 50,
-                        # }
-                        #
-
-                else:  # if on the last tier
-                    if stake_amount > tier["maxNotional"]:
-                        # If stake is > than max tradeable amount
-                        raise InvalidOrderException(f"Amount {stake_amount} too high for {pair}")
-                    else:
-                        return tier["maxLeverage"]
+            #     else:  # if on the last tier
+            if stake_amount > max_stake:
+                # If stake is > than max tradeable amount
+                raise InvalidOrderException(f"Amount {stake_amount} too high for {pair}")
 
             raise OperationalException(
                 "Looped through all tiers without finding a max leverage. Should never be reached"
@@ -3375,6 +3393,23 @@ class Exchange:
                 return 1.0  # Default if max leverage cannot be found
         else:
             return 1.0
+
+    def _get_max_notional_from_tiers(self, pair: str, leverage: float) -> float | None:
+        """
+        get max_notional from leverage_tiers
+        :param pair: The base/quote currency pair being traded
+        :param leverage: The leverage to be used
+        :return: The maximum notional value for the given leverage or None if not found
+        """
+        if self.trading_mode != TradingMode.FUTURES:
+            return None
+        if pair not in self._leverage_tiers:
+            return None
+        pair_tiers = self._leverage_tiers[pair]
+        for tier in reversed(pair_tiers):
+            if leverage <= tier["maxLeverage"]:
+                return tier["maxNotional"]
+        return None
 
     @retrier
     def _set_leverage(
@@ -3661,12 +3696,12 @@ class Exchange:
     def dry_run_liquidation_price(
         self,
         pair: str,
-        open_rate: float,  # Entry price of position
+        open_rate: float,
         is_short: bool,
         amount: float,
         stake_amount: float,
         leverage: float,
-        wallet_balance: float,  # Or margin balance
+        wallet_balance: float,
         open_trades: list,
     ) -> float | None:
         """
@@ -3687,8 +3722,6 @@ class Exchange:
         :param amount: Absolute value of position size incl. leverage (in base currency)
         :param stake_amount: Stake amount - Collateral in settle currency.
         :param leverage: Leverage used for this position.
-        :param trading_mode: SPOT, MARGIN, FUTURES, etc.
-        :param margin_mode: Either ISOLATED or CROSS
         :param wallet_balance: Amount of margin_mode in the wallet being used to trade
             Cross-Margin Mode: crossWalletBalance
             Isolated-Margin Mode: isolatedWalletBalance

@@ -524,10 +524,11 @@ class PairCandlesRequest(BaseModel):
     columns: list[str] | None = None
 
 
-class PairHistoryRequest(PairCandlesRequest):
+class PairHistoryRequest(PairCandlesRequest, ExchangeModePayloadMixin):
     timerange: str
-    strategy: str
+    strategy: str | None = None
     freqaimodel: str | None = None
+    live_mode: bool = False
 
 
 class PairHistory(BaseModel):
@@ -606,6 +607,24 @@ class BacktestMarketChange(BaseModel):
     data: list[list[Any]]
 
 
+class MarketRequest(ExchangeModePayloadMixin, BaseModel):
+    base: str | None = None
+    quote: str | None = None
+
+
+class MarketModel(BaseModel):
+    symbol: str
+    base: str
+    quote: str
+    spot: bool
+    swap: bool
+
+
+class MarketResponse(BaseModel):
+    markets: dict[str, MarketModel]
+    exchange_id: str
+
+
 class SysInfo(BaseModel):
     cpu_pct: list[float]
     ram_pct: float
@@ -618,3 +637,16 @@ class Health(BaseModel):
     bot_start_ts: int | None = None
     bot_startup: datetime | None = None
     bot_startup_ts: int | None = None
+
+
+class CustomDataEntry(BaseModel):
+    key: str
+    type: str
+    value: Any
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class ListCustomData(BaseModel):
+    trade_id: int
+    custom_data: list[CustomDataEntry]

@@ -22,7 +22,6 @@ class Hyperliquid(Exchange):
 
     _ft_has: FtHas = {
         "ohlcv_has_history": False,
-        "ohlcv_candle_limit": 5000,
         "l2_limit_range": [20],
         "trades_has_history": False,
         "tickers_have_bid_ask": False,
@@ -36,6 +35,7 @@ class Hyperliquid(Exchange):
         "stop_price_prop": "stopPrice",
         "funding_fee_timeframe": "1h",
         "funding_fee_candle_limit": 500,
+        "uses_leverage_tiers": False,
     }
 
     _supported_trading_mode_margin_pairs: list[tuple[TradingMode, MarginMode]] = [
